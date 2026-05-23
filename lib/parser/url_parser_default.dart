@@ -238,36 +238,45 @@ class UrlParserDefault implements UrlParser {
     int requestRangeEnd,
     Map<String, String> headers,
   ) async {
-    if ((requestRangeStart == 0 && requestRangeEnd == 1) ||
-        requestRangeEnd == -1) {
-      DownloadTask task = DownloadTask(
-        uri: uri,
-        startRange: 0,
-        endRange: 1,
-        headers: headers,
-      );
-      Uint8List? data = await cache(task);
-      int contentLength = 0;
-      if (data != null) {
-        contentLength = int.tryParse(Utf8Codec().decode(data)) ?? 0;
+    DownloadTask infoTask = DownloadTask(
+      uri: uri,
+      startRange: 0,
+      endRange: 1,
+      headers: headers,
+    );
+    Uint8List? infoData = await cache(infoTask);
+    int totalContentLength = 0;
+    if (infoData != null) {
+      totalContentLength = int.tryParse(Utf8Codec().decode(infoData)) ?? 0;
+    }
+    if (totalContentLength == 0) {
+      try {
+        totalContentLength = await head(uri, headers: headers);
+        await _cacheContentLength(infoTask, totalContentLength);
+      } catch (e) {
+        logE('[UrlParserDefault] Get content length online failed (offline?): $e');
       }
-      if (contentLength == 0) {
-        contentLength = await head(uri, headers: headers);
-        await _cacheContentLength(task, contentLength);
-      }
-      if (requestRangeStart == 0 && requestRangeEnd == 1) {
-        responseHeaders.add('content-range: bytes 0-1/$contentLength');
-        await socket.append(responseHeaders.join('\r\n'));
-        await socket.append([0]);
-        await socket.close();
-        return;
-      } else if (requestRangeEnd == -1) {
-        requestRangeEnd = contentLength - 1;
-      }
+    }
+
+    if (requestRangeStart == 0 && requestRangeEnd == 1) {
+      responseHeaders.add('content-range: bytes 0-1/$totalContentLength');
+      await socket.append(responseHeaders.join('\r\n'));
+      await socket.append([0]);
+      await socket.close();
+      return;
+    }
+
+    if (requestRangeEnd == -1) {
+      requestRangeEnd = totalContentLength - 1;
     }
 
     int contentLength = requestRangeEnd - requestRangeStart + 1;
     responseHeaders.add('content-length: $contentLength');
+    if (totalContentLength > 0) {
+      responseHeaders.add(
+        'content-range: bytes $requestRangeStart-$requestRangeEnd/$totalContentLength',
+      );
+    }
     await socket.append(responseHeaders.join('\r\n'));
 
     bool downloading = true;
@@ -476,6 +485,14 @@ class UrlParserDefault implements UrlParser {
     if (progressListen) _streamController = StreamController();
     int contentLength = await head(url.toSafeUri(), headers: headers);
     if (contentLength > 0) {
+      DownloadTask infoTask = DownloadTask(
+        uri: url.toSafeUri(),
+        startRange: 0,
+        endRange: 1,
+        headers: headers?.map((key, value) => MapEntry(key, value.toString())),
+      );
+      await _cacheContentLength(infoTask, contentLength);
+
       int segmentSize = contentLength ~/ Config.segmentSize +
           (contentLength % Config.segmentSize > 0 ? 1 : 0);
       if (cacheSegments > segmentSize) {
