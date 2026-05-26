@@ -54,10 +54,15 @@ class UrlParserM3U8 implements UrlParser {
     task.cacheDir = await FileExt.createCachePath(task.hlsKey);
     await VideoProxy.downloadManager.executeTask(task);
     await for (DownloadTask taskStream in VideoProxy.downloadManager.stream) {
-      if (taskStream.status == DownloadStatus.COMPLETED &&
-          taskStream.url == task.url) {
-        dataNetwork = Uint8List.fromList(taskStream.data);
-        break;
+      if (taskStream.url == task.url) {
+        if (taskStream.status == DownloadStatus.COMPLETED) {
+          dataNetwork = Uint8List.fromList(taskStream.data);
+          break;
+        } else if (taskStream.status == DownloadStatus.FAILED ||
+            taskStream.status == DownloadStatus.CANCELLED) {
+          logW('[UrlParserM3U8] Download failed or cancelled for ${task.url}');
+          break;
+        }
       }
     }
     return dataNetwork;

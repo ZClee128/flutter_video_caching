@@ -9,6 +9,9 @@ class Config {
   /// Can be toggled at runtime.
   static bool logPrint = false;
 
+  /// Optional log sink for forwarding logs to the host app.
+  static void Function(String message)? logSink;
+
   /// The server IP address used for network requests.
   static String ip = '127.0.0.1';
 

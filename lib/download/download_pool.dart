@@ -3,7 +3,6 @@ import 'dart:io';
 import 'dart:typed_data';
 
 import 'package:dio/dio.dart';
-import 'package:native_dio_adapter/native_dio_adapter.dart';
 import 'package:synchronized/synchronized.dart';
 
 import '../cache/lru_cache_singleton.dart';
@@ -47,7 +46,7 @@ class DownloadPool {
     if (_poolSize <= 0) {
       throw ArgumentError('Pool size must be greater than 0');
     }
-    _client = Dio()..httpClientAdapter = NativeAdapter();
+    _client = Dio(); // 使用 Dart 标准自包含 HTTP 栈，避免 NativeAdapter (Cronet) 在模拟器和特定 Range 请求下挂死或不兼容
     _streamController = StreamController.broadcast();
   }
 

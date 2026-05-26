@@ -152,8 +152,8 @@ class LruCacheSingleton {
       Directory cacheDir = Directory(await FileExt.createCachePath());
       if (!(await cacheDir.exists())) return;
       for (FileSystemEntity file in cacheDir.listSync(recursive: true)) {
-        FileStat stat = await file.stat();
-        if (stat.type == FileSystemEntityType.file) {
+        if (file is File) {
+          FileStat stat = file.statSync();
           String key = basenameWithoutExtension(file.path);
           // Restore through LruCacheStorage so size and per-key ledgers stay
           // in sync. Writing map/size directly caused stale startup state.

@@ -21,6 +21,28 @@ import 'url_parser.dart';
 /// MP4 URL parser implementation.
 /// Handles caching, downloading, and parsing of MP4 video files.
 class UrlParserMp4 implements UrlParser {
+  DownloadTask _contentLengthTask(Uri uri, Map<String, String> headers) {
+    return DownloadTask(
+      uri: uri,
+      fileName: '${uri.toString()}#content_length',
+      startRange: 0,
+      endRange: null,
+      headers: headers,
+    );
+  }
+
+  int _parseTotalLengthFromHeaders(Headers headers) {
+    final contentRange = headers.value(HttpHeaders.contentRangeHeader);
+    if (contentRange != null) {
+      final match = RegExp(r'bytes (\d+)-(\d+)/(\d+)').firstMatch(contentRange);
+      final total = match?.group(3);
+      if (total != null && total.isNotEmpty && total != '0') {
+        return int.tryParse(total) ?? -1;
+      }
+    }
+    final contentLength = headers.value(HttpHeaders.contentLengthHeader);
+    return int.tryParse(contentLength ?? '-1') ?? -1;
+  }
   /// Retrieves cached data for the given [task] from memory or file.
   ///
   /// Returns a [Uint8List] containing the cached data if available,
@@ -59,10 +81,15 @@ class UrlParserMp4 implements UrlParser {
     task.cacheDir = await FileExt.createCachePath(task.uri.generateMd5);
     await VideoProxy.downloadManager.executeTask(task);
     await for (DownloadTask taskStream in VideoProxy.downloadManager.stream) {
-      if (taskStream.status == DownloadStatus.COMPLETED &&
-          taskStream.matchUrl == task.matchUrl) {
-        dataNetwork = Uint8List.fromList(taskStream.data);
-        break;
+      if (taskStream.matchUrl == task.matchUrl) {
+        if (taskStream.status == DownloadStatus.COMPLETED) {
+          dataNetwork = Uint8List.fromList(taskStream.data);
+          break;
+        } else if (taskStream.status == DownloadStatus.FAILED ||
+            taskStream.status == DownloadStatus.CANCELLED) {
+          logW('[UrlParserMp4] Download failed or cancelled for ${task.url}');
+          break;
+        }
       }
     }
     return dataNetwork;
@@ -87,7 +114,7 @@ class UrlParserMp4 implements UrlParser {
       RegExpMatch? rangeMatch = exp.firstMatch(headers['range'] ?? '');
       int requestRangeStart = int.tryParse(rangeMatch?.group(1) ?? '0') ?? 0;
       int requestRangeEnd = int.tryParse(rangeMatch?.group(2) ?? '0') ?? -1;
-      bool partial = requestRangeStart > 0 || requestRangeEnd > 0;
+      bool partial = headers.containsKey('range') || headers.containsKey('Range') || requestRangeStart > 0 || requestRangeEnd > 0;
       List<String> responseHeaders = <String>[
         partial ? 'HTTP/1.1 206 Partial Content' : 'HTTP/1.1 200 OK',
         'Accept-Ranges: bytes',
@@ -137,26 +164,21 @@ class UrlParserMp4 implements UrlParser {
     int requestRangeEnd,
     Map<String, String> headers,
   ) async {
-    DownloadTask task = DownloadTask(
-      uri: uri,
-      startRange: 0,
-      endRange: 1,
-      headers: headers,
-    );
-    Uint8List? data = await cache(task);
+    final infoTask = _contentLengthTask(uri, headers);
+    Uint8List? data = await cache(infoTask);
     int contentLength = 0;
     if (data != null) {
       contentLength = int.tryParse(Utf8Codec().decode(data)) ?? 0;
     }
     if (contentLength == 0) {
       contentLength = await head(uri, headers: headers);
-      await _cacheContentLength(task, contentLength);
+      await _cacheContentLength(infoTask, contentLength);
     }
 
     requestRangeEnd = contentLength - 1;
-    responseHeaders.add('content-length: ${contentLength - requestRangeStart}');
+    responseHeaders.add('Content-Length: ${contentLength - requestRangeStart}');
     responseHeaders.add(
-      'content-range: bytes '
+      'Content-Range: bytes '
       '$requestRangeStart-$requestRangeEnd/$contentLength',
     );
     await socket.append(responseHeaders.join('\r\n'));
@@ -236,12 +258,7 @@ class UrlParserMp4 implements UrlParser {
     int requestRangeEnd,
     Map<String, String> headers,
   ) async {
-    DownloadTask infoTask = DownloadTask(
-      uri: uri,
-      startRange: 0,
-      endRange: 1,
-      headers: headers,
-    );
+    final infoTask = _contentLengthTask(uri, headers);
     Uint8List? infoData = await cache(infoTask);
     int totalContentLength = 0;
     if (infoData != null) {
@@ -257,7 +274,7 @@ class UrlParserMp4 implements UrlParser {
     }
 
     if (requestRangeStart == 0 && requestRangeEnd == 1) {
-      responseHeaders.add('content-range: bytes 0-1/$totalContentLength');
+      responseHeaders.add('Content-Range: bytes 0-1/$totalContentLength');
       await socket.append(responseHeaders.join('\r\n'));
       await socket.append([0]);
       await socket.close();
@@ -269,10 +286,10 @@ class UrlParserMp4 implements UrlParser {
     }
 
     int contentLength = requestRangeEnd - requestRangeStart + 1;
-    responseHeaders.add('content-length: $contentLength');
+    responseHeaders.add('Content-Length: $contentLength');
     if (totalContentLength > 0) {
       responseHeaders.add(
-        'content-range: bytes $requestRangeStart-$requestRangeEnd/$totalContentLength',
+        'Content-Range: bytes $requestRangeStart-$requestRangeEnd/$totalContentLength',
       );
     }
     await socket.append(responseHeaders.join('\r\n'));
@@ -354,25 +371,31 @@ class UrlParserMp4 implements UrlParser {
         client.options.headers[key] = value;
       });
     }
-    Response response = await client.headUri(uri);
-    // Get content-length from content-range, if failed get from content-length
-    String? contentRange = response.headers.value(
-      HttpHeaders.contentRangeHeader,
-    );
-    if (contentRange != null) {
-      final match = RegExp(r'bytes (\d+)-(\d+)/(\d+)').firstMatch(contentRange);
-      if (match != null && match.group(3) != null) {
-        String total = match.group(3)!;
-        if (total.isNotEmpty && total != '0') {
-          return int.parse(total);
-        }
-      }
+    try {
+      final response = await client.headUri(uri);
+      final length = _parseTotalLengthFromHeaders(response.headers);
+      if (length > 0) return length;
+    } catch (_) {}
+
+    try {
+      final probeHeaders = <String, dynamic>{...client.options.headers};
+      probeHeaders[HttpHeaders.rangeHeader] = 'bytes=0-0';
+      final response = await client.getUri(
+        uri,
+        options: Options(
+          headers: probeHeaders,
+          responseType: ResponseType.bytes,
+          receiveTimeout: const Duration(seconds: 10),
+          sendTimeout: const Duration(seconds: 10),
+        ),
+      );
+      final length = _parseTotalLengthFromHeaders(response.headers);
+      if (length > 0) return length;
+    } finally {
+      client.close(force: true);
     }
-    String? contentLength = response.headers.value(
-      HttpHeaders.contentLengthHeader,
-    );
-    client.close();
-    return int.tryParse(contentLength ?? '-1') ?? -1;
+
+    return -1;
   }
 
   Future<void> _cacheContentLength(
@@ -383,7 +406,7 @@ class UrlParserMp4 implements UrlParser {
       // Content length is already known by the caller. This small metadata file
       // only speeds up later requests, so failures must not block the response.
       String filePath = '${await FileExt.createCachePath(task.uri.generateMd5)}'
-          '/${task.saveFileName}';
+          '/${task.matchUrl}.meta';
       File file = File(filePath);
       await file.writeAsString(contentLength.toString());
       await LruCacheSingleton().storagePut(task.matchUrl, file);
@@ -483,11 +506,10 @@ class UrlParserMp4 implements UrlParser {
     if (progressListen) _streamController = StreamController();
     int contentLength = await head(url.toSafeUri(), headers: headers);
     if (contentLength > 0) {
-      DownloadTask infoTask = DownloadTask(
-        uri: url.toSafeUri(),
-        startRange: 0,
-        endRange: 1,
-        headers: headers?.map((key, value) => MapEntry(key, value.toString())),
+      final infoTask = _contentLengthTask(
+        url.toSafeUri(),
+        (headers ?? const <String, Object>{})
+            .map((k, v) => MapEntry(k, v.toString())),
       );
       await _cacheContentLength(infoTask, contentLength);
 

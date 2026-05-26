@@ -22,6 +22,17 @@ import 'url_parser.dart';
 /// Handles caching, downloading, and parsing of common video files.
 /// Implements the [UrlParser] interface for common video files.
 class UrlParserDefault implements UrlParser {
+  DownloadTask _contentLengthTask(Uri uri, Map<String, String> headers) {
+    // Use a dedicated cache key to avoid colliding with real segment caches
+    // (e.g. player probing with Range: bytes=0-1).
+    return DownloadTask(
+      uri: uri,
+      fileName: '${uri.toString()}#content_length',
+      startRange: 0,
+      endRange: null,
+      headers: headers,
+    );
+  }
   /// Retrieves cached data for the given [task] from memory or file.
   ///
   /// Returns a [Uint8List] containing the cached data if available,
@@ -60,10 +71,15 @@ class UrlParserDefault implements UrlParser {
     task.cacheDir = await FileExt.createCachePath(task.uri.generateMd5);
     await VideoProxy.downloadManager.executeTask(task);
     await for (DownloadTask taskStream in VideoProxy.downloadManager.stream) {
-      if (taskStream.status == DownloadStatus.COMPLETED &&
-          taskStream.matchUrl == task.matchUrl) {
-        dataNetwork = Uint8List.fromList(taskStream.data);
-        break;
+      if (taskStream.matchUrl == task.matchUrl) {
+        if (taskStream.status == DownloadStatus.COMPLETED) {
+          dataNetwork = Uint8List.fromList(taskStream.data);
+          break;
+        } else if (taskStream.status == DownloadStatus.FAILED ||
+            taskStream.status == DownloadStatus.CANCELLED) {
+          logW('[UrlParserDefault] Download failed or cancelled for ${task.url}');
+          break;
+        }
       }
     }
     return dataNetwork;
@@ -87,8 +103,15 @@ class UrlParserDefault implements UrlParser {
       RegExp exp = RegExp(r'bytes=(\d+)-(\d*)');
       RegExpMatch? rangeMatch = exp.firstMatch(headers['range'] ?? '');
       int requestRangeStart = int.tryParse(rangeMatch?.group(1) ?? '0') ?? 0;
-      int requestRangeEnd = int.tryParse(rangeMatch?.group(2) ?? '0') ?? -1;
-      bool partial = requestRangeStart > 0 || requestRangeEnd > 0;
+      final endGroup = rangeMatch?.group(2);
+      int requestRangeEnd = (endGroup == null || endGroup.isEmpty)
+          ? -1
+          : (int.tryParse(endGroup) ?? -1);
+      bool partial = headers.containsKey('range') ||
+          headers.containsKey('Range') ||
+          rangeMatch != null ||
+          requestRangeStart > 0 ||
+          requestRangeEnd >= 0;
       List<String> responseHeaders = <String>[
         partial ? 'HTTP/1.1 206 Partial Content' : 'HTTP/1.1 200 OK',
         'Accept-Ranges: bytes',
@@ -138,26 +161,21 @@ class UrlParserDefault implements UrlParser {
     int requestRangeEnd,
     Map<String, String> headers,
   ) async {
-    DownloadTask task = DownloadTask(
-      uri: uri,
-      startRange: 0,
-      endRange: 1,
-      headers: headers,
-    );
-    Uint8List? data = await cache(task);
+    final infoTask = _contentLengthTask(uri, headers);
+    Uint8List? data = await cache(infoTask);
     int contentLength = 0;
     if (data != null) {
       contentLength = int.tryParse(Utf8Codec().decode(data)) ?? 0;
     }
     if (contentLength == 0) {
       contentLength = await head(uri, headers: headers);
-      await _cacheContentLength(task, contentLength);
+      await _cacheContentLength(infoTask, contentLength);
     }
 
     requestRangeEnd = contentLength - 1;
-    responseHeaders.add('content-length: ${contentLength - requestRangeStart}');
+    responseHeaders.add('Content-Length: ${contentLength - requestRangeStart}');
     responseHeaders.add(
-      'content-range: bytes '
+      'Content-Range: bytes '
       '$requestRangeStart-$requestRangeEnd/$contentLength',
     );
     await socket.append(responseHeaders.join('\r\n'));
@@ -238,12 +256,7 @@ class UrlParserDefault implements UrlParser {
     int requestRangeEnd,
     Map<String, String> headers,
   ) async {
-    DownloadTask infoTask = DownloadTask(
-      uri: uri,
-      startRange: 0,
-      endRange: 1,
-      headers: headers,
-    );
+    final infoTask = _contentLengthTask(uri, headers);
     Uint8List? infoData = await cache(infoTask);
     int totalContentLength = 0;
     if (infoData != null) {
@@ -259,7 +272,7 @@ class UrlParserDefault implements UrlParser {
     }
 
     if (requestRangeStart == 0 && requestRangeEnd == 1) {
-      responseHeaders.add('content-range: bytes 0-1/$totalContentLength');
+      responseHeaders.add('Content-Range: bytes 0-1/$totalContentLength');
       await socket.append(responseHeaders.join('\r\n'));
       await socket.append([0]);
       await socket.close();
@@ -271,10 +284,10 @@ class UrlParserDefault implements UrlParser {
     }
 
     int contentLength = requestRangeEnd - requestRangeStart + 1;
-    responseHeaders.add('content-length: $contentLength');
+    responseHeaders.add('Content-Length: $contentLength');
     if (totalContentLength > 0) {
       responseHeaders.add(
-        'content-range: bytes $requestRangeStart-$requestRangeEnd/$totalContentLength',
+        'Content-Range: bytes $requestRangeStart-$requestRangeEnd/$totalContentLength',
       );
     }
     await socket.append(responseHeaders.join('\r\n'));
@@ -356,24 +369,47 @@ class UrlParserDefault implements UrlParser {
         client.options.headers[key] = value;
       });
     }
-    Response response = await client.headUri(uri);
-    // Get content-length from content-range, if failed get from content-length
-    String? contentRange = response.headers.value(
-      HttpHeaders.contentRangeHeader,
-    );
+    try {
+      Response response = await client.headUri(uri);
+      final length = _parseTotalLengthFromHeaders(response.headers);
+      if (length > 0) return length;
+    } catch (_) {
+      // Some CDNs / object storage may not allow HEAD while GET works.
+    }
+
+    try {
+      // Fallback: probe by Range GET (bytes=0-0) and parse Content-Range.
+      final probeHeaders = <String, dynamic>{...client.options.headers};
+      probeHeaders[HttpHeaders.rangeHeader] = 'bytes=0-0';
+      final response = await client.getUri(
+        uri,
+        options: Options(
+          headers: probeHeaders,
+          responseType: ResponseType.bytes,
+          receiveTimeout: const Duration(seconds: 10),
+          sendTimeout: const Duration(seconds: 10),
+        ),
+      );
+      final length = _parseTotalLengthFromHeaders(response.headers);
+      if (length > 0) return length;
+    } finally {
+      client.close(force: true);
+    }
+
+    return -1;
+  }
+
+  int _parseTotalLengthFromHeaders(Headers headers) {
+    // Prefer Content-Range total length: "bytes start-end/total"
+    final contentRange = headers.value(HttpHeaders.contentRangeHeader);
     if (contentRange != null) {
       final match = RegExp(r'bytes (\d+)-(\d+)/(\d+)').firstMatch(contentRange);
-      if (match != null && match.group(3) != null) {
-        String total = match.group(3)!;
-        if (total.isNotEmpty && total != '0') {
-          return int.parse(total);
-        }
+      final total = match?.group(3);
+      if (total != null && total.isNotEmpty && total != '0') {
+        return int.tryParse(total) ?? -1;
       }
     }
-    String? contentLength = response.headers.value(
-      HttpHeaders.contentLengthHeader,
-    );
-    client.close();
+    final contentLength = headers.value(HttpHeaders.contentLengthHeader);
     return int.tryParse(contentLength ?? '-1') ?? -1;
   }
 
@@ -384,8 +420,9 @@ class UrlParserDefault implements UrlParser {
     try {
       // Content length is already known by the caller. This small metadata file
       // only speeds up later requests, so failures must not block the response.
+      // Store as a dedicated .meta file to avoid colliding with real media segment files.
       String filePath = '${await FileExt.createCachePath(task.uri.generateMd5)}'
-          '/${task.saveFileName}';
+          '/${task.matchUrl}.meta';
       File file = File(filePath);
       await file.writeAsString(contentLength.toString());
       await LruCacheSingleton().storagePut(task.matchUrl, file);
@@ -485,11 +522,10 @@ class UrlParserDefault implements UrlParser {
     if (progressListen) _streamController = StreamController();
     int contentLength = await head(url.toSafeUri(), headers: headers);
     if (contentLength > 0) {
-      DownloadTask infoTask = DownloadTask(
-        uri: url.toSafeUri(),
-        startRange: 0,
-        endRange: 1,
-        headers: headers?.map((key, value) => MapEntry(key, value.toString())),
+      final infoTask = _contentLengthTask(
+        url.toSafeUri(),
+        (headers ?? const <String, Object>{})
+            .map((k, v) => MapEntry(k, v.toString())),
       );
       await _cacheContentLength(infoTask, contentLength);
 

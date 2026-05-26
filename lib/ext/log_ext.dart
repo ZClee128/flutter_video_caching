@@ -12,6 +12,12 @@ class LogInstance {
   );
 }
 
+void _sink(dynamic message) {
+  try {
+    Config.logSink?.call(message.toString());
+  } catch (_) {}
+}
+
 /// Custom log filter that determines whether logs should be printed
 /// based on the [Config.logPrint] flag.
 class LocalLogFilter extends LogFilter {
@@ -27,22 +33,41 @@ void logIsolate(dynamic message) {
   if (Config.logPrint) {
     print(message);
   }
+  _sink(message);
 }
 
 /// Logs a verbose message using the global logger.
-void logV(dynamic message) => LogInstance.logger.t(message);
+void logV(dynamic message) {
+  LogInstance.logger.t(message);
+  _sink(message);
+}
 
 /// Logs a debug message using the global logger.
-void logD(dynamic message) => LogInstance.logger.d(message);
+void logD(dynamic message) {
+  LogInstance.logger.d(message);
+  _sink(message);
+}
 
 /// Logs an info message using the global logger.
-void logI(dynamic message) => LogInstance.logger.i(message);
+void logI(dynamic message) {
+  LogInstance.logger.i(message);
+  _sink(message);
+}
 
 /// Logs a warning message using the global logger.
-void logW(dynamic message) => LogInstance.logger.w(message);
+void logW(dynamic message) {
+  LogInstance.logger.w(message);
+  _sink(message);
+}
 
 /// Logs an error message using the global logger.
-void logE(dynamic message) => LogInstance.logger.e(message);
+void logE(dynamic message) {
+  LogInstance.logger.e(message);
+  _sink(message);
+}
 
 /// Logs a fatal (wtf) message using the global logger.
-void logN(dynamic message) => LogInstance.logger.f(message);
+void logN(dynamic message) {
+  LogInstance.logger.f(message);
+  _sink(message);
+}
