@@ -43,6 +43,31 @@ class UrlParserMp4 implements UrlParser {
     final contentLength = headers.value(HttpHeaders.contentLengthHeader);
     return int.tryParse(contentLength ?? '-1') ?? -1;
   }
+
+  /// Finds the content length of the video locally by scanning its cache directory.
+  Future<int> _findContentLengthLocally(Uri uri) async {
+    try {
+      final cacheKey = uri.generateMd5;
+      final cachePath = await FileExt.createCachePath(cacheKey);
+      final dir = Directory(cachePath);
+      if (await dir.exists()) {
+        final files = dir.listSync();
+        for (var file in files) {
+          if (file is File && file.path.endsWith('.meta')) {
+            final content = await file.readAsString();
+            final len = int.tryParse(content.trim()) ?? 0;
+            if (len > 0) {
+              logD('[UrlParserMp4] Found cached content length from local meta file: $len');
+              return len;
+            }
+          }
+        }
+      }
+    } catch (e) {
+      logE('[UrlParserMp4] Error finding content length locally: $e');
+    }
+    return 0;
+  }
   /// Retrieves cached data for the given [task] from memory or file.
   ///
   /// Returns a [Uint8List] containing the cached data if available,
@@ -170,9 +195,24 @@ class UrlParserMp4 implements UrlParser {
     if (data != null) {
       contentLength = int.tryParse(Utf8Codec().decode(data)) ?? 0;
     }
-    if (contentLength == 0) {
-      contentLength = await head(uri, headers: headers);
-      await _cacheContentLength(infoTask, contentLength);
+    if (contentLength <= 0) {
+      contentLength = await _findContentLengthLocally(uri);
+    }
+    if (contentLength <= 0) {
+      try {
+        contentLength = await head(uri, headers: headers);
+        if (contentLength > 0) {
+          await _cacheContentLength(infoTask, contentLength);
+        }
+      } catch (e) {
+        logE('[UrlParserMp4] Get content length online failed in parseAndroid: $e');
+      }
+    }
+
+    if (contentLength <= 0) {
+      logE('[UrlParserMp4] CRITICAL: Cannot determine content length offline in parseAndroid, aborting.');
+      await socket.close();
+      return;
     }
 
     requestRangeEnd = contentLength - 1;
@@ -264,13 +304,24 @@ class UrlParserMp4 implements UrlParser {
     if (infoData != null) {
       totalContentLength = int.tryParse(Utf8Codec().decode(infoData)) ?? 0;
     }
-    if (totalContentLength == 0) {
+    if (totalContentLength <= 0) {
+      totalContentLength = await _findContentLengthLocally(uri);
+    }
+    if (totalContentLength <= 0) {
       try {
         totalContentLength = await head(uri, headers: headers);
-        await _cacheContentLength(infoTask, totalContentLength);
+        if (totalContentLength > 0) {
+          await _cacheContentLength(infoTask, totalContentLength);
+        }
       } catch (e) {
         logE('[UrlParserMp4] Get content length online failed (offline?): $e');
       }
+    }
+
+    if (totalContentLength <= 0) {
+      logE('[UrlParserMp4] CRITICAL: Cannot determine content length offline in parseIOS, aborting.');
+      await socket.close();
+      return;
     }
 
     if (requestRangeStart == 0 && requestRangeEnd == 1) {
@@ -466,14 +517,59 @@ class UrlParserMp4 implements UrlParser {
     Map<String, Object>? headers,
     int cacheSegments,
   ) async {
-    int contentLength = await head(url.toSafeUri(), headers: headers);
+    int contentLength = 0;
+    
+    // 1. 尝试从本地缓存中直接读取 content_length 避免网络请求
+    try {
+      final infoTask = _contentLengthTask(
+        url.toSafeUri(),
+        (headers ?? const <String, Object>{})
+            .map((k, v) => MapEntry(k, v.toString())),
+      );
+      final Uint8List? infoData = await cache(infoTask);
+      if (infoData != null) {
+        contentLength = int.tryParse(Utf8Codec().decode(infoData)) ?? 0;
+      }
+    } catch (_) {}
+
+    // 2. 尝试从本地目录寻找 .meta 文件获取 content_length
+    if (contentLength <= 0) {
+      try {
+        contentLength = await _findContentLengthLocally(url.toSafeUri());
+      } catch (_) {}
+    }
+
+    // 3. 如果本地没有缓存好的元数据长度，再尝试联网 HEAD（降级容灾）
+    if (contentLength <= 0) {
+      try {
+        contentLength = await head(url.toSafeUri(), headers: headers);
+      } catch (_) {}
+    }
+
     if (contentLength > 0) {
       int segmentSize = contentLength ~/ Config.segmentSize +
           (contentLength % Config.segmentSize > 0 ? 1 : 0);
       if (cacheSegments > segmentSize) {
         cacheSegments = segmentSize;
       }
+    } else {
+      // 3. 如果完全断网（contentLength 依然 <= 0），检查本地分片目录是否存在。
+      // 如果本地目录存在且里面包含已经下载的分片，判定为已缓存，防止断网抛异常！
+      try {
+        final cacheKey = url.toSafeUri().generateMd5;
+        final cachePath = await FileExt.createCachePath(cacheKey);
+        final dir = Directory(cachePath);
+        if (await dir.exists()) {
+          final files = dir.listSync();
+          if (files.isNotEmpty) {
+            // 只要里面存在缓存分片，说明已经缓冲过，返回 true
+            return true;
+          }
+        }
+      } catch (_) {}
+      return false;
     }
+
     int count = 0;
     while (count < cacheSegments) {
       DownloadTask task = DownloadTask(uri: url.toSafeUri(), headers: headers);

