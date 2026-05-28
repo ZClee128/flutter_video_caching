@@ -23,11 +23,13 @@ import 'url_parser.dart';
 /// Implements the [UrlParser] interface for common video files.
 class UrlParserDefault implements UrlParser {
   DownloadTask _contentLengthTask(Uri uri, Map<String, String> headers) {
-    // Use a dedicated cache key to avoid colliding with real segment caches
-    // (e.g. player probing with Range: bytes=0-1).
+    // 🚀 核心秒开与跨页缓存共享优化：净化 uri 的 queryParameters 仅保留核心路径作为 .meta 文件的唯一缓存键！
+    // 彻底防止因认证 Token / S3 签名失效或动态变化导致 .meta 文件发生 Cache Miss，
+    // 从而强迫 proxy 联网发送超慢且易挂起的 HEAD 请求以读取文件长度，消除切换页面时的 Loading 闪烁与挂起！
+    final cleanUri = uri.replace(queryParameters: {});
     return DownloadTask(
       uri: uri,
-      fileName: '${uri.toString()}#content_length',
+      fileName: '${cleanUri.toString()}#content_length',
       startRange: 0,
       endRange: null,
       headers: headers,

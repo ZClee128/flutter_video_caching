@@ -22,9 +22,13 @@ import 'url_parser.dart';
 /// Handles caching, downloading, and parsing of MP4 video files.
 class UrlParserMp4 implements UrlParser {
   DownloadTask _contentLengthTask(Uri uri, Map<String, String> headers) {
+    // 🚀 核心秒开与跨页缓存共享优化：净化 uri 的 queryParameters 仅保留核心路径作为 .meta 文件的唯一缓存键！
+    // 彻底防止因认证 Token / S3 签名失效或动态变化导致 .meta 文件发生 Cache Miss，
+    // 从而强迫 proxy 联网发送超慢且易挂起的 HEAD 请求以读取文件长度，消除切换页面时的 Loading 闪烁与挂起！
+    final cleanUri = uri.replace(queryParameters: {});
     return DownloadTask(
       uri: uri,
-      fileName: '${uri.toString()}#content_length',
+      fileName: '${cleanUri.toString()}#content_length',
       startRange: 0,
       endRange: null,
       headers: headers,
@@ -517,6 +521,19 @@ class UrlParserMp4 implements UrlParser {
     Map<String, Object>? headers,
     int cacheSegments,
   ) async {
+    // 🚀 极速优化：先检测第 0 分片（开头分片）是否缓存在本地。
+    // 如果第 0 分片不在，那说明该视频完全未被缓存，直接返回 false！
+    // 这样可以 100% 避免后面由于 contentLength 未知而触发的超慢 HEAD 联网请求，秒级返回！
+    try {
+      DownloadTask firstTask = DownloadTask(uri: url.toSafeUri(), headers: headers);
+      firstTask.startRange = 0;
+      firstTask.endRange = Config.segmentSize - 1;
+      Uint8List? firstData = await cache(firstTask);
+      if (firstData == null) {
+        return false;
+      }
+    } catch (_) {}
+
     int contentLength = 0;
     
     // 1. 尝试从本地缓存中直接读取 content_length 避免网络请求

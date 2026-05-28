@@ -48,13 +48,16 @@ class LocalProxyServer {
         server?.listen(_handleConnection);
       }
     } on SocketException catch (e) {
-      logW('Proxy server Socket close: $e');
-      // If the port is occupied (EADDRINUSE), increment port and retry.
-      // Error code 48 on macOS/iOS, 98 on Linux.
-      final code = e.osError?.errorCode;
-      if (code == 48 || code == 98) {
+      logW('Proxy server Socket bind failed: $e');
+      // 🚀 核心可用性防撞锁机制：不限特定平台的错误码，只要 bind 时遭遇 SocketException，
+      // 说明当前端口已被占用、处于 TIME_WAIT 或者权限受限。
+      // 我们在此自动递增端口进行重试（最多试 20 个端口），确保在 App 热重启、
+      // 调试状态或旧连接未释放时，始终能瞬间且成功启动本地代理服务器，绝不让初始化失败！
+      if (Config.port < 20270) {
         Config.port = Config.port + 1;
         await start();
+      } else {
+        rethrow;
       }
     }
   }

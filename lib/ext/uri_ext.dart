@@ -33,6 +33,12 @@ extension UriExt on Uri {
   ///
   /// Converts the URI to a string, encodes it as UTF-8, and returns the MD5 hash.
   String get generateMd5 {
+    if (this.scheme.toLowerCase().startsWith('http') && this.host != '127.0.0.1' && this.host != 'localhost') {
+      // 🚀 核心可用性秒开优化：仅对外部网络请求 URL 去除 Query 参数生成缓存目录 MD5，
+      // 确保带动态时间戳/预签名授权参数（如 S3 Signature）的 URL 能够共享同个物理磁盘缓存文件夹！
+      // ⚠️ 必须保留本地环回代理（127.0.0.1/localhost）的 queryParameters，否则 startRange/endRange 分片索引信息会被误删导致分片卡死冲突！
+      return md5.convert(utf8.encode(this.replace(queryParameters: {}).toString())).toString();
+    }
     return md5.convert(utf8.encode(this.toString())).toString();
   }
 }
